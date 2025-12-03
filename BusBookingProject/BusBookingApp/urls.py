@@ -1,15 +1,26 @@
 from django.urls import path, include
-from .views import TripListView, TripDetailView, BookingCreateView, GoogleLogin, UserRegistrationView
+from .views import (
+    TripListView,
+    TripDetailView,
+    BookingCreateView,
+    GoogleLogin
+)
 
 urlpatterns = [
+    # --- BUS & BOOKING API (Giữ nguyên logic nghiệp vụ) ---
     path('trips/', TripListView.as_view(), name='trip-list'),
     path('trips/<int:pk>/', TripDetailView.as_view(), name='trip-detail'),
     path('bookings/', BookingCreateView.as_view(), name='booking-create'),
-    # API đăng nhập thường (username/pass)
+
+    # --- AUTH API (Dùng thư viện) ---
+    # 1. Login, Logout, User Info, Password Reset...
+    # Endpoint: /api/auth/login/, /api/auth/logout/, /api/auth/user/...
     path('auth/', include('dj_rest_auth.urls')),
-    # API đăng ký thường
+
+    # 2. Registration (Đăng ký tài khoản thường)
+    # Endpoint: /api/auth/registration/
     path('auth/registration/', include('dj_rest_auth.registration.urls')),
-    # API đăng nhập Google
+
+    # 3. Google Login (Vẫn cần khai báo view này để map với Google Adapter)
     path('auth/google/', GoogleLogin.as_view(), name='google_login'),
-    path('register/', UserRegistrationView.as_view(), name='register'),
 ]

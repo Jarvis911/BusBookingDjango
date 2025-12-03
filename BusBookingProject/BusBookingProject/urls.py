@@ -11,7 +11,6 @@ urlpatterns = [
     # 1. Trang quản trị Django (Admin)
     path('admin/', admin.site.urls),
     path('api/v1/', include('BusBookingApp.urls')),
-    path('api/v1/login/', obtain_auth_token, name='api_token_auth'),
     # 3. Cấu hình Swagger API Docs
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),

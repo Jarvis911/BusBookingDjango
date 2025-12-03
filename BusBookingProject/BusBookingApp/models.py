@@ -3,32 +3,56 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 
 
-# 1. Quản lý Xe
+# ... (Model Bus giữ nguyên) ...
 class Bus(models.Model):
-    LICENSE_PLATE = models.CharField(max_length=20, unique=True)  # Biển số
-    bus_type = models.CharField(max_length=50)  # Vd: Giường nằm, Limousine
-    total_seats = models.PositiveIntegerField(default=40)  # Tổng số ghế (để validate)
+    LICENSE_PLATE = models.CharField(max_length=20, unique=True)
+    bus_type = models.CharField(max_length=50)
+    total_seats = models.PositiveIntegerField(default=40)
 
     def __str__(self):
         return f"{self.LICENSE_PLATE} ({self.total_seats} ghế)"
 
 
-# 2. Quản lý Tuyến đường (Địa điểm & Giá)
+# 2. Quản lý Tuyến đường
 class Route(models.Model):
-    origin = models.CharField(max_length=100)  # Điểm đi
-    destination = models.CharField(max_length=100)  # Điểm đến
+    origin = models.CharField(max_length=100)
+    destination = models.CharField(max_length=100)
     distance_km = models.FloatField(null=True, blank=True)
-    base_price = models.DecimalField(max_digits=10, decimal_places=0)  # Giá vé chuẩn
+    base_price = models.DecimalField(max_digits=10, decimal_places=0)
     duration_hours = models.FloatField(help_text="Thời gian di chuyển dự kiến")
 
     def __str__(self):
         return f"{self.origin} -> {self.destination}"
 
 
-# 3. Quản lý Chuyến đi (Cụ thể hóa thời gian)
+# ===> MỚI: Model Điểm đón/trả thuộc về Route <===
+class RoutePoint(models.Model):
+    POINT_TYPE_CHOICES = [
+        ('PICKUP', 'Điểm đón'),
+        ('DROPOFF', 'Điểm trả'),
+        ('BOTH', 'Điểm trung chuyển (Vừa đón vừa trả)'),
+    ]
+
+    route = models.ForeignKey(Route, on_delete=models.CASCADE, related_name='points')
+    name = models.CharField(max_length=200)  # Tên điểm (Vd: Bến xe Mỹ Đình, Ngã tư Sở)
+    address = models.CharField(max_length=500, blank=True)  # Địa chỉ chi tiết
+    point_type = models.CharField(max_length=10, choices=POINT_TYPE_CHOICES, default='BOTH')
+    order = models.PositiveIntegerField(default=0, help_text="Thứ tự điểm trên hành trình (0, 1, 2...)")
+    surcharge = models.DecimalField(max_digits=10, decimal_places=0, default=0,
+                                    help_text="Phụ phí nếu đón/trả tại đây (nếu có)")
+
+    class Meta:
+        ordering = ['order']  # Sắp xếp theo thứ tự hành trình
+        unique_together = ['route', 'order']  # Không thể có 2 điểm cùng thứ tự trên 1 tuyến
+
+    def __str__(self):
+        return f"[{self.route.origin}-{self.route.destination}] {self.name} ({self.get_point_type_display()})"
+
+
+# ... (Model Trip giữ nguyên) ...
 class Trip(models.Model):
     route = models.ForeignKey(Route, on_delete=models.CASCADE, related_name='trips')
-    bus = models.ForeignKey(Bus, on_delete=models.PROTECT)  # Không cho xóa xe nếu đã có chuyến
+    bus = models.ForeignKey(Bus, on_delete=models.PROTECT)
     departure_time = models.DateTimeField()
     arrival_time = models.DateTimeField()
     status = models.CharField(
@@ -41,16 +65,8 @@ class Trip(models.Model):
     def __str__(self):
         return f"{self.route} | {self.departure_time.strftime('%d/%m %H:%M')}"
 
-    @property
-    def available_seats(self):
-        # Lấy danh sách ghế đã đặt
-        booked_seats = self.bookings.filter(status='CONFIRMED').values_list('seat_number', flat=True)
-        # Trả về danh sách ghế còn trống (giả sử ghế đánh số từ 1 đến total_seats)
-        all_seats = range(1, self.bus.total_seats + 1)
-        return [seat for seat in all_seats if seat not in booked_seats]
 
-
-# 4. Quản lý Đặt vé (Quan trọng nhất)
+# 4. Quản lý Đặt vé (CẬP NHẬT LOGIC)
 class Booking(models.Model):
     STATUS_CHOICES = [
         ('PENDING', 'Chờ thanh toán'),
@@ -60,14 +76,19 @@ class Booking(models.Model):
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='bookings')
     trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name='bookings')
-    seat_number = models.PositiveIntegerField()  # Số ghế (Vd: 1, 2, 3...)
+
+    # ===> CẬP NHẬT: Thêm điểm đón/trả <===
+    pickup_point = models.ForeignKey(RoutePoint, on_delete=models.PROTECT, related_name='pickup_bookings',
+                                     verbose_name="Điểm đón")
+    dropoff_point = models.ForeignKey(RoutePoint, on_delete=models.PROTECT, related_name='dropoff_bookings',
+                                      verbose_name="Điểm trả")
+
+    seat_number = models.PositiveIntegerField()
     booking_time = models.DateTimeField(auto_now_add=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
-    price_paid = models.DecimalField(max_digits=10,
-                                     decimal_places=0)  # Lưu giá tại thời điểm đặt (phòng khi giá Route thay đổi)
+    price_paid = models.DecimalField(max_digits=10, decimal_places=0)
 
     class Meta:
-        # Ràng buộc duy nhất: Một chuyến đi không thể có 2 vé cùng số ghế (trừ khi vé kia đã hủy)
         constraints = [
             models.UniqueConstraint(
                 fields=['trip', 'seat_number'],
@@ -77,14 +98,39 @@ class Booking(models.Model):
         ]
 
     def clean(self):
-        # Kiểm tra logic: Ghế đặt không được lớn hơn số ghế của xe
+        # 1. Logic cũ: Kiểm tra ghế
         if self.seat_number > self.trip.bus.total_seats:
-            raise ValidationError(
-                f"Ghế số {self.seat_number} không tồn tại (Xe chỉ có {self.trip.bus.total_seats} ghế).")
+            raise ValidationError(f"Ghế số {self.seat_number} không tồn tại.")
+
+        # 2. Logic MỚI: Kiểm tra điểm đón/trả có thuộc Route của Trip không?
+        if self.pickup_point.route != self.trip.route:
+            raise ValidationError({'pickup_point': "Điểm đón không thuộc lộ trình của chuyến xe này."})
+
+        if self.dropoff_point.route != self.trip.route:
+            raise ValidationError({'dropoff_point': "Điểm trả không thuộc lộ trình của chuyến xe này."})
+
+        # 3. Logic MỚI: Kiểm tra loại điểm (Điểm trả thì không được đón, trừ khi là BOTH)
+        if self.pickup_point.point_type == 'DROPOFF':
+            raise ValidationError({'pickup_point': "Đây là điểm trả khách, không được phép đón."})
+
+        if self.dropoff_point.point_type == 'PICKUP':
+            raise ValidationError({'dropoff_point': "Đây là điểm đón khách, không được phép trả."})
+
+        # 4. Logic MỚI: Kiểm tra thứ tự (Điểm đón phải đứng trước điểm trả)
+        # Ví dụ: Hà Nội (order=0) -> Ninh Bình (order=1) -> Thanh Hóa (order=2)
+        # Đón Ninh Bình thì phải trả ở Thanh Hóa, không được trả ngược về Hà Nội.
+        if self.pickup_point.order >= self.dropoff_point.order:
+            raise ValidationError("Điểm trả khách phải nằm sau điểm đón khách trong lộ trình.")
 
     def save(self, *args, **kwargs):
-        self.full_clean()  # Gọi hàm clean trước khi lưu
+        # Tự động cộng phụ phí (nếu có) vào giá vé
+        if not self.price_paid:
+            base = self.trip.route.base_price
+            surcharge = self.pickup_point.surcharge + self.dropoff_point.surcharge
+            self.price_paid = base + surcharge
+
+        self.full_clean()
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"Vé {self.id} | {self.trip} | Ghế {self.seat_number}"
+        return f"Vé {self.id} | Ghế {self.seat_number} | Đón: {self.pickup_point.name} -> Trả: {self.dropoff_point.name}"
